@@ -11,6 +11,14 @@ interface Message {
   timestamp: Date
 }
 
+interface SurveyState {
+  currentStep?: string
+  nextStep?: string
+  progressPercentage?: number
+  isCompleted?: boolean
+  answers?: Record<string, any>
+}
+
 export default function LiveDemoSection() {
   const [isListening, setIsListening] = useState(false)
   const [isAiSpeaking, setIsAiSpeaking] = useState(false)
@@ -20,10 +28,18 @@ export default function LiveDemoSection() {
   const [isRecording, setIsRecording] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState('')
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [surveyState, setSurveyState] = useState<SurveyState>({})
+  const [isInConversation, setIsInConversation] = useState(false)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const streamRef = useRef<MediaStream | null>(null)
+
+  // 세션 ID 생성 함수
+  const generateSessionId = () => {
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
 
   // 브라우저별 최적 MIME 타입 선택
   const getBestMimeType = () => {
@@ -174,6 +190,12 @@ export default function LiveDemoSection() {
       formData.append('file', wavBlob, 'recording.wav')
       formData.append('language', 'ko-KR')
 
+      // 세션 ID 추가
+      if (currentSessionId) {
+        formData.append('sessionId', currentSessionId)
+        console.log('Using session ID:', currentSessionId)
+      }
+
       // API 호출
       const response = await fetch('/api/voice-assistant', {
         method: 'POST',
@@ -194,6 +216,24 @@ export default function LiveDemoSection() {
       // JSON 응답 처리 (새로운 응답 구조)
       const data = await response.json()
       console.log('API 응답:', data)
+
+      // 서버에서 생성한 세션 ID 저장 (첫 요청 시)
+      if (!currentSessionId && data.sessionId) {
+        setCurrentSessionId(data.sessionId)
+        console.log('Received new session ID from server:', data.sessionId)
+      }
+
+      // 설문 상태 업데이트
+      if (data.surveyState) {
+        setSurveyState({
+          currentStep: data.surveyState.currentStep,
+          nextStep: data.surveyState.nextStep,
+          progressPercentage: data.surveyState.progressPercentage,
+          isCompleted: data.surveyState.isCompleted,
+          answers: data.surveyState.answers
+        })
+        console.log('Survey state updated:', data.surveyState)
+      }
 
       // Base64 오디오 데이터를 Blob으로 변환
       const audioBytes = atob(data.audioData)
@@ -242,6 +282,12 @@ export default function LiveDemoSection() {
   }
 
   const startConversation = async () => {
+    // 서버가 세션 ID를 자동 생성하도록 변경
+    // 첫 요청에서는 sessionId를 보내지 않음
+    setCurrentSessionId(null)
+    setIsInConversation(true)
+    setSurveyState({})
+    console.log('Starting new conversation, server will generate session ID')
     // 클라이언트 사이드에서만 실행
     if (typeof window === 'undefined') {
       console.error('Server side - cannot access browser APIs')
@@ -356,11 +402,16 @@ export default function LiveDemoSection() {
   }
 
   const resetDemo = () => {
+    // 새로운 설문 시작 - 서버가 새 세션 ID 생성하도록 null로 설정
+    setCurrentSessionId(null)
     setConversation([])
     setCurrentStep('waiting')
     setIsListening(false)
     setIsAiSpeaking(false)
     setTranscript('')
+    setSurveyState({})
+    setIsInConversation(false)
+    console.log('Reset demo - server will generate new session ID')
   }
 
   const getStatusText = () => {
@@ -408,6 +459,32 @@ export default function LiveDemoSection() {
                 {getStatusText()}
               </div>
             </div>
+
+            {/* 설문 진행 상태 */}
+            {surveyState.progressPercentage !== undefined && (
+              <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                <div className="flex items-center justify-between text-blue-400 text-sm mb-2">
+                  <span>📊 설문 진행 중: {surveyState.currentStep || '시작'}</span>
+                  <span>{surveyState.progressPercentage.toFixed(1)}%</span>
+                </div>
+                <div className="w-full bg-blue-900/30 rounded-full h-2">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${surveyState.progressPercentage}%` }}
+                  />
+                </div>
+                {surveyState.nextStep && (
+                  <div className="text-blue-400/70 text-xs mt-2">
+                    다음 단계: {surveyState.nextStep}
+                  </div>
+                )}
+                {surveyState.isCompleted && (
+                  <div className="text-green-400 text-sm mt-2 font-semibold">
+                    ✅ 설문이 완료되었습니다! 감사합니다.
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 에러 메시지 */}
             {error && (
@@ -518,7 +595,7 @@ export default function LiveDemoSection() {
                     className="demo-button tertiary"
                     disabled={isListening || isAiSpeaking}
                   >
-                    새로 시작
+                    {surveyState.isCompleted ? '새 설문 시작' : '새로 시작'}
                   </button>
                 )}
               </div>
