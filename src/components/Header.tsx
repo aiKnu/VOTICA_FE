@@ -1,20 +1,25 @@
-import Image from 'next/image';
+import Image from 'next/image'
 
 export default function Header() {
   return (
-    <header className="flex justify-between items-center px-8 py-5 bg-black/90 border-b border-gray-800 shadow-lg sticky top-0 z-50">
-      <div>
-        <Image src="/votica-logo.png" alt="VOTICA" width={48} height={48} />
-      </div>
-      <nav className="space-x-8 hidden md:flex text-lg font-medium">
-        <a href="#" className="hover:text-blue-400 transition">문서</a>
-        <a href="#" className="hover:text-blue-400 transition">블로그</a>
-        <a href="#" className="hover:text-blue-400 transition">서비스 소개서</a>
-      </nav>
-      <div className="space-x-3">
-        <button className="px-5 py-2 rounded-full bg-gray-900 text-white border border-gray-700 hover:bg-gray-800 shadow">로그인</button>
-        <button className="px-5 py-2 rounded-full bg-white text-black font-bold shadow-lg hover:bg-gray-200">도입문의</button>
+    <header className="header">
+      <div className="container">
+        <div className="header-content">
+          <a href="#" className="logo">
+            <Image src="/votica-logo.png" alt="VOTICA" width={55} height={55} />
+            <span className="logo-text">VOTICA</span>
+          </a>
+
+          <nav>
+            <ul className="nav">
+              <li><a href="#demo">시연</a></li>
+              <li><a href="#contact">문의</a></li>
+            </ul>
+          </nav>
+
+          <a href="#demo" className="header-cta">무료 체험</a>
+        </div>
       </div>
     </header>
-  );
+  )
 }
