@@ -1,19 +1,25 @@
 'use client'
 
-import Header from '@/components/Header'
-import HeroSection from '@/components/sections/HeroSection'
-import FeaturesSection from '@/components/sections/FeaturesSection'
-import Footer from '@/components/Footer'
+import Header from '../components/Header';
+import HeroSection from '../components/HeroSection';
+import FeaturesSection from '../components/FeaturesSection';
+import TechSection from '../components/TechSection';
+import DemoSection from '../components/DemoSection';
+import CTASection from '../components/CTASection';
+import Footer from '../components/Footer';
 
 export default function Home() {
   return (
-    <div className="min-h-screen" style={{ backgroundColor: '#000000', color: '#ffffff' }}>
+    <div className="bg-black min-h-screen text-white">
       <Header />
-      <main style={{ backgroundColor: '#000000' }}>
+      <main>
         <HeroSection />
         <FeaturesSection />
+        <TechSection />
+        <DemoSection />
+        <CTASection />
       </main>
       <Footer />
     </div>
-  )
+  );
 }
