@@ -19,11 +19,14 @@ export default function VoiceChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState<string>('')
   const [isPlaying, setIsPlaying] = useState(false)
+const [conversationState, setConversationState] = useState<'idle' | 'listening' | 'processing' | 'speaking'>('idle')
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const autoRecordTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const autoStopTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // 브라우저별 최적 MIME 타입 선택
   const getBestMimeType = (): string => {
@@ -124,14 +127,20 @@ export default function VoiceChat() {
       streamRef.current = stream
       setIsSessionActive(true)
       setError('')
+      setConversationState('listening')
 
       // 환영 메시지
       setMessages([{
         id: Date.now().toString(),
         type: 'ai',
-        text: '안녕하세요! 무엇을 도와드릴까요? 🎙️ 버튼을 눌러 말씀해주세요.',
+        text: '안녕하세요! 무엇을 도와드릴까요? 말씀해주세요.',
         timestamp: new Date()
       }])
+
+      // 즉시 첫 번째 녹음 시작
+      setTimeout(() => {
+        startRecording()
+      }, 1000) // 1초 후 자동 시작
     } catch (err: any) {
       console.error('getUserMedia error:', err)
 
@@ -153,6 +162,9 @@ export default function VoiceChat() {
 
   // 대화 세션 종료
   const endSession = () => {
+    // 자동 녹음 타이머 취소
+    cancelAutoRecording()
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
@@ -164,11 +176,15 @@ export default function VoiceChat() {
     setIsSessionActive(false)
     setIsRecording(false)
     setIsProcessing(false)
+    setConversationState('idle')
   }
 
   // 녹음 시작
   const startRecording = useCallback(async () => {
     if (!streamRef.current) return
+
+    // 자동 녹음 타이머 취소 (수동 녹음 시작 시)
+    cancelAutoRecording()
 
     try {
       const mimeType = getBestMimeType()
@@ -197,28 +213,49 @@ export default function VoiceChat() {
 
         if (audioBlob.size < 1000) {
           setError('오디오 파일이 너무 작습니다. 녹음이 제대로 되었는지 확인하세요.')
+          setConversationState('listening')
+          startAutoRecordingCountdown() // 실패 시 다시 시도
           return
         }
 
         if (recordingDuration < 500) {
           setError('녹음 시간이 너무 짧습니다. 최소 0.5초 이상 녹음해주세요.')
+          setConversationState('listening')
+          startAutoRecordingCountdown() // 실패 시 다시 시도
           return
         }
 
+        setConversationState('processing')
         await sendToServer(audioBlob)
       }
 
       mediaRecorderRef.current.start(100)
       setIsRecording(true)
       setError('')
+
+      // 10초 후 자동으로 녹음 종료
+      autoStopTimeoutRef.current = setTimeout(() => {
+        if (mediaRecorderRef.current && isRecording) {
+          console.log('자동 녹음 종료 (10초)')
+          stopRecording()
+        }
+      }, 10000)
     } catch (err) {
       setError('녹음을 시작할 수 없습니다.')
       console.error(err)
+      setConversationState('listening')
+      startAutoRecordingCountdown() // 실패 시 다시 시도
     }
   }, [])
 
   // 녹음 중지
   const stopRecording = useCallback(() => {
+    // 자동 종료 타이머 클리어
+    if (autoStopTimeoutRef.current) {
+      clearTimeout(autoStopTimeoutRef.current)
+      autoStopTimeoutRef.current = null
+    }
+
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop()
       setIsRecording(false)
@@ -282,19 +319,50 @@ export default function VoiceChat() {
 
       setMessages(prev => [...prev, userMessage, aiMessage])
 
+      setConversationState('processing')
+
       // 음성 자동 재생
       const audio = new Audio(audioUrl)
       audio.onended = () => {
         setIsPlaying(false)
+        setConversationState('listening')
+        // AI 응답 완료 후 자동으로 다음 녹음 준비
+        startAutoRecordingCountdown()
       }
       setIsPlaying(true)
+      setConversationState('speaking')
       await audio.play()
 
     } catch (err) {
       setError(err instanceof Error ? err.message : '처리 중 오류가 발생했습니다')
       console.error('전송 실패:', err)
+      setConversationState('listening')
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  // 자동 녹음 카운트다운 시작
+  const startAutoRecordingCountdown = () => {
+    // 기존 타이머가 있으면 클리어
+    if (autoRecordTimeoutRef.current) {
+      clearTimeout(autoRecordTimeoutRef.current)
+    }
+
+    // 1초 후 자동으로 다음 녹음 시작
+    autoRecordTimeoutRef.current = setTimeout(() => {
+      if (isSessionActive && !isRecording && !isProcessing) {
+        console.log('자동 녹음 시작')
+        startRecording()
+      }
+    }, 1000)
+  }
+
+  // 자동 녹음 카운트다운 취소
+  const cancelAutoRecording = () => {
+    if (autoRecordTimeoutRef.current) {
+      clearTimeout(autoRecordTimeoutRef.current)
+      autoRecordTimeoutRef.current = null
     }
   }
 
@@ -316,6 +384,27 @@ export default function VoiceChat() {
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.onended = () => setIsPlaying(false)
+    }
+  }, [])
+
+  // 컴포넌트 언마운트 시 클린업
+  useEffect(() => {
+    return () => {
+      // 모든 타이머 클린업
+      cancelAutoRecording()
+      if (autoStopTimeoutRef.current) {
+        clearTimeout(autoStopTimeoutRef.current)
+      }
+
+      // 미디어 스트림 정리
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop())
+      }
+
+      // MediaRecorder 정리
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
     }
   }, [])
 
@@ -435,38 +524,64 @@ export default function VoiceChat() {
                 </motion.div>
               )}
 
-              {/* 컨트롤 버튼 */}
-              <div className="flex items-center justify-center space-x-4">
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={isProcessing}
-                  className={`p-6 rounded-full transition-all ${
-                    isRecording
-                      ? 'bg-red-500 hover:bg-red-600 animate-pulse'
-                      : 'bg-gradient-to-r from-cyan-500 to-purple-500 hover:shadow-lg hover:shadow-cyan-500/25'
-                  } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  {isRecording ? (
-                    <MicOff className="w-8 h-8 text-white" />
-                  ) : (
-                    <Mic className="w-8 h-8 text-white" />
+              {/* 상태 표시 및 컨트롤 */}
+              <div className="text-center space-y-4">
+                {/* 상태 시각적 표시 */}
+                <div className="flex items-center justify-center">
+                  {conversationState === 'listening' && (
+                    <motion.div
+                      animate={{ scale: [1, 1.2, 1] }}
+                      transition={{ repeat: Infinity, duration: 2 }}
+                      className="w-16 h-16 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 flex items-center justify-center"
+                    >
+                      <Volume2 className="w-8 h-8 text-white" />
+                    </motion.div>
                   )}
-                </motion.button>
 
+                  {isRecording && (
+                    <motion.div
+                      animate={{ scale: [1, 1.1, 1] }}
+                      transition={{ repeat: Infinity, duration: 1 }}
+                      className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center"
+                    >
+                      <Mic className="w-8 h-8 text-white" />
+                    </motion.div>
+                  )}
+
+                  {conversationState === 'processing' && (
+                    <div className="w-16 h-16 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                      <Loader2 className="w-8 h-8 text-white animate-spin" />
+                    </div>
+                  )}
+
+                  {conversationState === 'speaking' && (
+                    <motion.div
+                      animate={{ scale: [1, 1.1, 1] }}
+                      transition={{ repeat: Infinity, duration: 1.5 }}
+                      className="w-16 h-16 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 flex items-center justify-center"
+                    >
+                      <Volume2 className="w-8 h-8 text-white" />
+                    </motion.div>
+                  )}
+                </div>
+
+                {/* 대화 종료 버튼 */}
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={endSession}
-                  className="px-6 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-white font-medium transition-all"
+                  className="px-8 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-white font-medium transition-all"
                 >
                   대화 종료
                 </motion.button>
               </div>
 
               <p className="text-center text-gray-500 text-sm mt-4">
-                {isRecording ? '녹음 중... 다시 누르면 전송됩니다' : '마이크 버튼을 눌러 말하기'}
+                {conversationState === 'listening' && '🎧 잠시 후 녹음이 시작됩니다...'}
+                {isRecording && '🎙️ 녹음 중... 말씀해주세요 (최대 10초)'}
+                {conversationState === 'processing' && '🤖 AI가 답변을 생성하고 있습니다...'}
+                {conversationState === 'speaking' && '🔊 AI가 답변하고 있습니다...'}
+                {conversationState === 'idle' && '대화를 시작해주세요'}
               </p>
             </div>
           )}
