@@ -2,19 +2,28 @@
 
 import { useState, useRef, useCallback } from 'react'
 
+interface Message {
+  type: 'user' | 'ai'
+  text: string
+  audioUrl?: string
+  confidence?: number
+  model?: string
+  timestamp: Date
+}
+
 export default function LiveDemoSection() {
   const [isListening, setIsListening] = useState(false)
   const [isAiSpeaking, setIsAiSpeaking] = useState(false)
-  const [conversation, setConversation] = useState([])
+  const [conversation, setConversation] = useState<Message[]>([])
   const [currentStep, setCurrentStep] = useState('waiting') // waiting, listening, processing, speaking
   const [transcript, setTranscript] = useState('')
   const [isRecording, setIsRecording] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState('')
 
-  const mediaRecorderRef = useRef(null)
-  const audioChunksRef = useRef([])
-  const streamRef = useRef(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
 
   // 브라우저별 최적 MIME 타입 선택
   const getBestMimeType = () => {
@@ -34,8 +43,8 @@ export default function LiveDemoSection() {
   }
 
   // WebM/Opus를 WAV로 변환
-  const convertToWav = async (webmBlob) => {
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 })
+  const convertToWav = async (webmBlob: Blob) => {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 })
     const arrayBuffer = await webmBlob.arrayBuffer()
 
     try {
@@ -47,7 +56,7 @@ export default function LiveDemoSection() {
       const view = new DataView(buffer)
 
       // WAV 헤더 작성
-      const writeString = (offset, string) => {
+      const writeString = (offset: number, string: string) => {
         for (let i = 0; i < string.length; i++) {
           view.setUint8(offset + i, string.charCodeAt(i))
         }
@@ -110,15 +119,18 @@ export default function LiveDemoSection() {
 
         console.log('Audio size:', audioBlob.size, 'bytes')
         console.log('Recording duration:', recordingDuration, 'ms')
+        console.log('Audio chunks count:', audioChunksRef.current.length)
 
-        if (audioBlob.size < 1000) {
-          setError('오디오 파일이 너무 작습니다. 녹음이 제대로 되었는지 확인하세요.')
+        // 최소 녹음 시간 1초로 증가
+        if (recordingDuration < 1000) {
+          setError('녹음 시간이 너무 짧습니다. 최소 1초 이상 말씀해주세요.')
           setCurrentStep('waiting')
           return
         }
 
-        if (recordingDuration < 500) {
-          setError('녹음 시간이 너무 짧습니다. 최소 0.5초 이상 녹음해주세요.')
+        // 오디오 크기 체크 (최소 5KB)
+        if (audioBlob.size < 5000) {
+          setError('녹음된 음성이 감지되지 않았습니다. 마이크를 확인하고 다시 시도해주세요.')
           setCurrentStep('waiting')
           return
         }
@@ -139,7 +151,7 @@ export default function LiveDemoSection() {
   }, [])
 
   // 서버로 전송 및 응답 처리
-  const sendToServer = async (audioBlob) => {
+  const sendToServer = async (audioBlob: Blob) => {
     setCurrentStep('processing')
     setIsProcessing(true)
     setError('')
@@ -169,26 +181,42 @@ export default function LiveDemoSection() {
       })
 
       if (!response.ok) {
-        const error = await response.text()
-        console.error('서버 오류:', error)
-        throw new Error(`서버 오류: ${response.status}`)
+        const errorData = await response.json()
+        console.error('서버 오류:', errorData)
+
+        // Show user-friendly error message from API
+        setError(errorData.error || `서버 오류가 발생했습니다. (${response.status})`)
+        setCurrentStep('waiting')
+        setIsProcessing(false)
+        return
       }
 
-      // 음성 응답 처리 (서버가 MP3 오디오 직접 반환)
-      const audioData = await response.blob()
-      const audioUrl = URL.createObjectURL(audioData)
+      // JSON 응답 처리 (새로운 응답 구조)
+      const data = await response.json()
+      console.log('API 응답:', data)
 
-      // 메시지 추가
-      const userMessage = {
+      // Base64 오디오 데이터를 Blob으로 변환
+      const audioBytes = atob(data.audioData)
+      const audioArray = new Uint8Array(audioBytes.length)
+      for (let i = 0; i < audioBytes.length; i++) {
+        audioArray[i] = audioBytes.charCodeAt(i)
+      }
+      const responseAudioBlob = new Blob([audioArray], { type: 'audio/mpeg' })
+      const audioUrl = URL.createObjectURL(responseAudioBlob)
+
+      // 실제 텍스트로 메시지 추가
+      const userMessage: Message = {
         type: 'user',
-        text: '음성 입력',
+        text: data.sttResult?.transcribedText || '음성 입력',
+        confidence: data.sttResult?.confidence,
         timestamp: new Date()
       }
 
-      const aiMessage = {
+      const aiMessage: Message = {
         type: 'ai',
-        text: 'AI 음성 응답',
+        text: data.llmResponse?.message || 'AI 응답',
         audioUrl: audioUrl,
+        model: data.llmResponse?.model,
         timestamp: new Date()
       }
 
@@ -248,14 +276,15 @@ export default function LiveDemoSection() {
     try {
       console.log('마이크 권한 요청 중...')
 
-      // 기본 오디오 제약 조건 (표준 속성들)
-      const audioConstraints = {
+      // 기본 오디오 제약 조건 (표준 속성들) - 품질 향상
+      const audioConstraints: any = {
         channelCount: 1,        // 모노
         sampleRate: 16000,      // 16kHz (Google STT 권장)
         sampleSize: 16,         // 16-bit
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: true
+        autoGainControl: true,
+        volume: 1.0            // 최대 볼륨
       }
 
       // Chrome 브라우저에서만 Google 전용 속성 추가
@@ -283,13 +312,13 @@ export default function LiveDemoSection() {
         type: 'ai',
         text: '안녕하세요! 무엇을 도와드릴까요? 말씀해주세요.',
         timestamp: new Date()
-      }])
+      } as Message])
 
       // 즉시 녹음 시작
       setCurrentStep('listening')
       await startRecording()
 
-    } catch (err) {
+    } catch (err: any) {
       console.error('getUserMedia error:', err)
 
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
