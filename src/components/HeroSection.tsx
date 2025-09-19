@@ -1,6 +1,6 @@
 export default function HeroSection() {
   return (
-    <section className="hero">
+    <section id="home" className="hero">
       <div className="container">
         <div className="hero-content">
           <h1>
@@ -13,7 +13,7 @@ export default function HeroSection() {
             실시간 감정분석과 인사이트 리포트까지 제공하는 차세대 여론조사 플랫폼
           </p>
 
-          <a href="#demo" className="cta-button">
+          <a href="#video" className="cta-button">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z"/>
             </svg>

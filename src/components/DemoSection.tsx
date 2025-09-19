@@ -9,11 +9,11 @@ export default function DemoSection() {
   const youtubeVideoId = "eny0BqmSwmM" // 예시 ID, 실제 VOTICA 데모 영상 ID로 교체 필요
 
   return (
-    <section id="demo" className="demo-section">
+    <section id="video" className="demo-section">
       <div className="container">
         <div className="demo-title">
-          <h2>VOTICA AI <span className="gradient-text">실제 시연</span></h2>
-          <p>AI가 실제로 진행하는 여론조사를 직접 들어보세요</p>
+          <h2>VOTICA AI <span className="gradient-text">시연 영상</span></h2>
+          <p>AI가 실제로 진행하는 여론조사 영상을 시청해보세요</p>
         </div>
 
         <div className="demo-container">

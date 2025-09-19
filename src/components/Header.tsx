@@ -12,8 +12,9 @@ export default function Header() {
 
           <nav>
             <ul className="nav">
+              <li><a href="#home">홈</a></li>
+              <li><a href="#video">영상</a></li>
               <li><a href="#demo">시연</a></li>
-              <li><a href="#contact">문의</a></li>
             </ul>
           </nav>
 
