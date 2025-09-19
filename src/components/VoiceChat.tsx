@@ -20,6 +20,9 @@ export default function VoiceChat() {
   const [error, setError] = useState<string>('')
   const [isPlaying, setIsPlaying] = useState(false)
 const [conversationState, setConversationState] = useState<'idle' | 'listening' | 'processing' | 'speaking'>('idle')
+  const [volumeLevel, setVolumeLevel] = useState(0)
+  const [isVoiceDetected, setIsVoiceDetected] = useState(false)
+  const [isManualMode, setIsManualMode] = useState(false)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
@@ -27,6 +30,14 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
   const streamRef = useRef<MediaStream | null>(null)
   const autoRecordTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const autoStopTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const animationFrameRef = useRef<number | null>(null)
+
+  // 음성 감지 설정 (카페/시끄러운 환경용 강화)
+  const VOICE_THRESHOLD = -20 // dB 임계값 (배경음악 대응으로 상향 조정)
+  const SILENCE_DURATION = 3000 // 3초 이상 무음 시 녹음 종료
+  const VOICE_START_DURATION = 1500 // 1.5초 이상 음성 감지 시 녹음 시작 (배경음악 무시)
 
   // 브라우저별 최적 MIME 타입 선택
   const getBestMimeType = (): string => {
@@ -119,7 +130,11 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
           sampleSize: 16,         // 16-bit
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          googEchoCancellation: true,
+          googAutoGainControl: true,
+          googNoiseSuppression: true,
+          googHighpassFilter: true
         }
       })
 
@@ -129,6 +144,9 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
       setError('')
       setConversationState('listening')
 
+      // 음성 활동 감지 시작
+      startVoiceActivityDetection(stream)
+
       // 환영 메시지
       setMessages([{
         id: Date.now().toString(),
@@ -137,10 +155,10 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
         timestamp: new Date()
       }])
 
-      // 즉시 첫 번째 녹음 시작
-      setTimeout(() => {
-        startRecording()
-      }, 1000) // 1초 후 자동 시작
+      // 음성 감지 기반 녹음 시작 모니터링 (수동 모드가 아닐 때만)
+      if (!isManualMode) {
+        startVoiceBasedRecording()
+      }
     } catch (err: any) {
       console.error('getUserMedia error:', err)
 
@@ -164,6 +182,9 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
   const endSession = () => {
     // 자동 녹음 타이머 취소
     cancelAutoRecording()
+
+    // 음성 활동 감지 정리
+    stopVoiceActivityDetection()
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
@@ -342,6 +363,112 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
     }
   }
 
+  // 음성 활동 감지 시작
+  const startVoiceActivityDetection = (stream: MediaStream) => {
+    try {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      analyserRef.current = audioContextRef.current.createAnalyser()
+
+      const source = audioContextRef.current.createMediaStreamSource(stream)
+      source.connect(analyserRef.current)
+
+      analyserRef.current.fftSize = 256
+      const bufferLength = analyserRef.current.frequencyBinCount
+      const dataArray = new Uint8Array(bufferLength)
+
+      const updateVolume = () => {
+        if (!analyserRef.current) return
+
+        analyserRef.current.getByteFrequencyData(dataArray)
+
+        // RMS 계산
+        let sum = 0
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i] * dataArray[i]
+        }
+        const rms = Math.sqrt(sum / bufferLength)
+
+        // dB 변환
+        const decibels = 20 * Math.log10(rms / 255)
+        setVolumeLevel(decibels)
+
+        // 음성 감지
+        const voiceDetected = decibels > VOICE_THRESHOLD
+        setIsVoiceDetected(voiceDetected)
+
+        animationFrameRef.current = requestAnimationFrame(updateVolume)
+      }
+
+      updateVolume()
+    } catch (err) {
+      console.error('음성 감지 초기화 실패:', err)
+    }
+  }
+
+  // 음성 감지 기반 녹음 제어
+  const startVoiceBasedRecording = () => {
+    let voiceStartTime = 0
+    let silenceStartTime = 0
+    let isCurrentlyRecording = false
+
+    const checkVoiceActivity = () => {
+      if (!isSessionActive) return
+
+      const now = Date.now()
+
+      if (isVoiceDetected) {
+        if (voiceStartTime === 0) {
+          voiceStartTime = now
+        }
+        silenceStartTime = 0
+
+        // 연속적인 음성이 일정 시간 이상 감지되면 녹음 시작
+        if (!isCurrentlyRecording && (now - voiceStartTime) > VOICE_START_DURATION) {
+          console.log('음성 감지 → 녹음 시작')
+          isCurrentlyRecording = true
+          startRecording()
+        }
+      } else {
+        voiceStartTime = 0
+
+        if (isCurrentlyRecording) {
+          if (silenceStartTime === 0) {
+            silenceStartTime = now
+          }
+
+          // 무음이 일정 시간 이상 계속되면 녹음 종료
+          if ((now - silenceStartTime) > SILENCE_DURATION) {
+            console.log('무음 감지 → 녹음 종료')
+            isCurrentlyRecording = false
+            stopRecording()
+          }
+        }
+      }
+
+      // 계속 모니터링
+      setTimeout(checkVoiceActivity, 100)
+    }
+
+    checkVoiceActivity()
+  }
+
+  // 음성 활동 감지 정리
+  const stopVoiceActivityDetection = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+
+    analyserRef.current = null
+    setVolumeLevel(0)
+    setIsVoiceDetected(false)
+  }
+
   // 자동 녹음 카운트다운 시작
   const startAutoRecordingCountdown = () => {
     // 기존 타이머가 있으면 클리어
@@ -395,6 +522,9 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
       if (autoStopTimeoutRef.current) {
         clearTimeout(autoStopTimeoutRef.current)
       }
+
+      // 음성 활동 감지 클린업
+      stopVoiceActivityDetection()
 
       // 미디어 스트림 정리
       if (streamRef.current) {
@@ -527,58 +657,120 @@ const [conversationState, setConversationState] = useState<'idle' | 'listening' 
               {/* 상태 표시 및 컨트롤 */}
               <div className="text-center space-y-4">
                 {/* 상태 시각적 표시 */}
-                <div className="flex items-center justify-center">
+                <div className="flex flex-col items-center justify-center space-y-2">
+                  <div className="flex items-center justify-center">
+                    {conversationState === 'listening' && (
+                      <motion.div
+                        animate={{
+                          scale: isVoiceDetected ? [1, 1.3, 1] : [1, 1.1, 1],
+                          backgroundColor: isVoiceDetected ? "#22c55e" : "#06b6d4"
+                        }}
+                        transition={{ repeat: Infinity, duration: isVoiceDetected ? 0.5 : 2 }}
+                        className="w-16 h-16 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 flex items-center justify-center"
+                      >
+                        <Volume2 className="w-8 h-8 text-white" />
+                      </motion.div>
+                    )}
+
+                    {isRecording && (
+                      <motion.div
+                        animate={{ scale: [1, 1.1, 1] }}
+                        transition={{ repeat: Infinity, duration: 1 }}
+                        className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center"
+                      >
+                        <Mic className="w-8 h-8 text-white" />
+                      </motion.div>
+                    )}
+
+                    {conversationState === 'processing' && (
+                      <div className="w-16 h-16 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                        <Loader2 className="w-8 h-8 text-white animate-spin" />
+                      </div>
+                    )}
+
+                    {conversationState === 'speaking' && (
+                      <motion.div
+                        animate={{ scale: [1, 1.1, 1] }}
+                        transition={{ repeat: Infinity, duration: 1.5 }}
+                        className="w-16 h-16 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 flex items-center justify-center"
+                      >
+                        <Volume2 className="w-8 h-8 text-white" />
+                      </motion.div>
+                    )}
+                  </div>
+
+                  {/* 음성 감지 표시 */}
                   {conversationState === 'listening' && (
-                    <motion.div
-                      animate={{ scale: [1, 1.2, 1] }}
-                      transition={{ repeat: Infinity, duration: 2 }}
-                      className="w-16 h-16 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 flex items-center justify-center"
-                    >
-                      <Volume2 className="w-8 h-8 text-white" />
-                    </motion.div>
-                  )}
-
-                  {isRecording && (
-                    <motion.div
-                      animate={{ scale: [1, 1.1, 1] }}
-                      transition={{ repeat: Infinity, duration: 1 }}
-                      className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center"
-                    >
-                      <Mic className="w-8 h-8 text-white" />
-                    </motion.div>
-                  )}
-
-                  {conversationState === 'processing' && (
-                    <div className="w-16 h-16 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
-                      <Loader2 className="w-8 h-8 text-white animate-spin" />
+                    <div className="flex items-center space-x-2">
+                      <div className="w-2 h-2 rounded-full bg-gray-400"></div>
+                      <div className={`w-2 h-2 rounded-full transition-colors ${isVoiceDetected ? 'bg-green-400' : 'bg-gray-400'}`}></div>
+                      <div className="w-2 h-2 rounded-full bg-gray-400"></div>
+                      <span className="text-xs text-gray-400 ml-2">
+                        {isVoiceDetected ? '음성 감지됨' : '음성 대기 중'}
+                      </span>
                     </div>
-                  )}
-
-                  {conversationState === 'speaking' && (
-                    <motion.div
-                      animate={{ scale: [1, 1.1, 1] }}
-                      transition={{ repeat: Infinity, duration: 1.5 }}
-                      className="w-16 h-16 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 flex items-center justify-center"
-                    >
-                      <Volume2 className="w-8 h-8 text-white" />
-                    </motion.div>
                   )}
                 </div>
 
-                {/* 대화 종료 버튼 */}
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={endSession}
-                  className="px-8 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-white font-medium transition-all"
-                >
-                  대화 종료
-                </motion.button>
+                {/* 모드 토글 및 컨트롤 */}
+                <div className="flex flex-col items-center space-y-3">
+                  {/* 모드 토글 */}
+                  <div className="flex items-center space-x-3">
+                    <span className="text-sm text-gray-400">자동 감지</span>
+                    <button
+                      onClick={() => setIsManualMode(!isManualMode)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        isManualMode ? 'bg-orange-500' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          isManualMode ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                    <span className="text-sm text-gray-400">수동 모드</span>
+                  </div>
+
+                  {/* 수동 녹음 버튼 (수동 모드일 때만) */}
+                  {isManualMode && (
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={isRecording ? stopRecording : startRecording}
+                      disabled={isProcessing}
+                      className={`p-4 rounded-full transition-all ${
+                        isRecording
+                          ? 'bg-red-500 hover:bg-red-600 animate-pulse'
+                          : 'bg-gradient-to-r from-cyan-500 to-purple-500 hover:shadow-lg hover:shadow-cyan-500/25'
+                      } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      {isRecording ? (
+                        <MicOff className="w-6 h-6 text-white" />
+                      ) : (
+                        <Mic className="w-6 h-6 text-white" />
+                      )}
+                    </motion.button>
+                  )}
+
+                  {/* 대화 종료 버튼 */}
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={endSession}
+                    className="px-8 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-white font-medium transition-all"
+                  >
+                    대화 종료
+                  </motion.button>
+                </div>
               </div>
 
               <p className="text-center text-gray-500 text-sm mt-4">
-                {conversationState === 'listening' && '🎧 잠시 후 녹음이 시작됩니다...'}
-                {isRecording && '🎙️ 녹음 중... 말씀해주세요 (최대 10초)'}
+                {isManualMode && conversationState === 'listening' && '🎤 수동 모드: 마이크 버튼을 눌러 녹음하세요'}
+                {!isManualMode && conversationState === 'listening' && !isVoiceDetected && '🎧 음성을 감지하고 있습니다... 말씀해주세요'}
+                {!isManualMode && conversationState === 'listening' && isVoiceDetected && '🎤 음성이 감지되었습니다!'}
+                {isRecording && !isManualMode && '🎙️ 녹음 중... 말씀을 마치시면 자동으로 전송됩니다'}
+                {isRecording && isManualMode && '🎙️ 녹음 중... 마이크 버튼을 다시 눌러 전송하세요'}
                 {conversationState === 'processing' && '🤖 AI가 답변을 생성하고 있습니다...'}
                 {conversationState === 'speaking' && '🔊 AI가 답변하고 있습니다...'}
                 {conversationState === 'idle' && '대화를 시작해주세요'}

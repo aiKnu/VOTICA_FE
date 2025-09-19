@@ -6,7 +6,7 @@ export async function POST(request: NextRequest) {
 
     // Forward the request to the backend voice assistant API
     const response = await fetch('http://localhost:8080/api/stt/voice-assistant', {
-      method: 'POST',
+  method: 'POST',
       body: formData,
     })
 
