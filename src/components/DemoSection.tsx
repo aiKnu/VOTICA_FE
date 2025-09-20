@@ -5,8 +5,7 @@ import { useState } from 'react'
 export default function DemoSection() {
   const [showVideo, setShowVideo] = useState(false)
 
-  // 여기에 실제 유튜브 비디오 ID를 입력하세요
-  const youtubeVideoId = "eny0BqmSwmM" // 예시 ID, 실제 VOTICA 데모 영상 ID로 교체 필요
+  const youtubeVideoId = "z5VzNmZN8SU"
 
   return (
     <section id="video" className="demo-section">
